@@ -83,32 +83,43 @@ EOF
 sudo systemctl daemon-reload
 sudo systemctl restart docker
 
-# 5. 安装 Docker Compose
-echo -e "\n${CYAN}-------------------------------------------------------${NC}"
-echo -e "${YELLOW}提示: 最新版查看: https://github.com/docker/compose/releases${NC}"
-echo -e "${CYAN}-------------------------------------------------------${NC}"
+# 5. 智能检测 Docker Compose
+echo -e "\n${CYAN}>>> 正在检测 Compose 状态...${NC}"
+HAS_PLUGIN=false
+if docker compose version &>/dev/null; then
+    echo -e "${GREEN}检测到 Docker 已自带 Compose V2 插件 (命令: docker compose)${NC}"
+    HAS_PLUGIN=true
+fi
 
-DEFAULT_COMPOSE="v2.26.1"
-read -p "请输入 Compose 版本号 (默认 $DEFAULT_COMPOSE): " INPUT_VERSION
-COMPOSE_VERSION=${INPUT_VERSION:-$DEFAULT_COMPOSE}
+INSTALL_V1=false
+if [ "$HAS_PLUGIN" = true ]; then
+    read -p "是否仍需安装独立二进制版 docker-compose (兼容带横杠命令)? (y/N): " REQ_V1
+    [[ "$REQ_V1" =~ ^[Yy]$ ]] && INSTALL_V1=true
+else
+    echo -e "${YELLOW}未检测到 Compose 插件，建议安装。${NC}"
+    INSTALL_V1=true
+fi
 
-echo -e "请选择下载代理:"
-echo "1) ghproxy.cn"
-echo "2) mirror.ghproxy.com"
-echo "3) GitHub 直接下载"
-read -p "选择 [1-3]: " PROXY_CHOICE
-
-BASE_URL="https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-$(uname -s)-$(uname -m)"
-
-case $PROXY_CHOICE in
-    1) DURL="https://ghproxy.cn/${BASE_URL}" ;;
-    2) DURL="https://mirror.ghproxy.com/${BASE_URL}" ;;
-    *) DURL="${BASE_URL}" ;;
-esac
-
-sudo curl -L "$DURL" -o /usr/local/bin/docker-compose
-sudo chmod +x /usr/local/bin/docker-compose
-sudo ln -sf /usr/local/bin/docker-compose /usr/bin/docker-compose
+if [ "$INSTALL_V1" = true ]; then
+    DEFAULT_COMPOSE="v2.26.1"
+    echo -e "${YELLOW}最新版查看: https://github.com/docker/compose/releases${NC}"
+    read -p "请输入版本号 (默认 $DEFAULT_COMPOSE): " COMPOSE_VERSION
+    COMPOSE_VERSION=${COMPOSE_VERSION:-$DEFAULT_COMPOSE}
+    
+    echo -e "选择下载代理: 1) ghproxy.cn  2) mirror.ghproxy.com  3) GitHub"
+    read -p "选择 [1-3]: " P_CHOICE
+    URL="https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-$(uname -s)-$(uname -m)"
+    case $P_CHOICE in
+        1) DURL="https://ghproxy.cn/$URL" ;;
+        2) DURL="https://mirror.ghproxy.com/$URL" ;;
+        *) DURL="$URL" ;;
+    esac
+    sudo curl -L "$DURL" -o /usr/local/bin/docker-compose
+    sudo chmod +x /usr/local/bin/docker-compose
+    sudo ln -sf /usr/local/bin/docker-compose /usr/bin/docker-compose
+else
+    echo -e "${GREEN}使用 Docker 自带 Compose 插件，跳过额外安装。${NC}"
+fi
 
 # 6. 验证与自动激活组权限
 echo -e "\n${GREEN}===========================================${NC}"
