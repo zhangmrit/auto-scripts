@@ -124,7 +124,7 @@ fi
 # 6. 验证与自动激活组权限
 echo -e "\n${GREEN}===========================================${NC}"
 docker --version 2>/dev/null
-docker-compose --version 2>/dev/null
+docker compose version 2>/dev/null || docker-compose --version 2>/dev/null
 echo -e "${GREEN}>>> 安装成功！${NC}"
 echo -e "${YELLOW}>>> 脚本即将执行 'newgrp docker' 自动激活免 sudo 权限... 如失败，请手动重试${NC}"
 echo -e "${YELLOW}>>> 激活后您将进入新的 Shell，直接输入 'docker ps' 测试即可。${NC}"
