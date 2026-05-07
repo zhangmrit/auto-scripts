@@ -25,20 +25,20 @@
 
 ```bash
 # GitHub 源
-sh -c "$(curl -fsSL https://raw.githubusercontent.com/zhangmrit/auto-scripts/main/docker/auto_docker.sh)"
+sh -c "$(curl -fsSL https://raw.githubusercontent.com/zhangmrit/auto-scripts/master/docker/auto_docker.sh)"
 ```
 
 > 国内服务器推荐使用 Gitee 源：
 >
 > ```bash
-> sh -c "$(curl -fsSL https://gitee.com/zhangmrit/auto-scripts/raw/main/docker/auto_docker.sh)"
+> sh -c "$(curl -fsSL https://gitee.com/zhangmrit/auto-scripts/raw/master/docker/auto_docker.sh)"
 > ```
 
 **或手动下载后执行：**
 
 ```bash
 # 下载脚本
-wget https://raw.githubusercontent.com/zhangmrit/auto-scripts/main/docker/auto_docker.sh
+wget https://raw.githubusercontent.com/zhangmrit/auto-scripts/master/docker/auto_docker.sh
 
 # 添加执行权限并运行
 chmod +x auto_docker.sh && bash auto_docker.sh
