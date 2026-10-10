@@ -94,6 +94,10 @@ is_interactive() {
     [ -t 0 ] && [ -t 1 ]
 }
 
+has_prompt_terminal() {
+    is_interactive || { [ -r /dev/tty ] && [ -w /dev/tty ]; }
+}
+
 info() {
     printf '%b\n' "${GREEN}$*${NC}"
 }
@@ -107,15 +111,102 @@ die() {
     exit 1
 }
 
+usage() {
+    cat <<'EOF'
+用法: sh auto_zsh.sh [选项]
+
+默认模式：交互安装或配置 Zsh。
+无人值守模式按 auto 规则执行：官方源优先，已安装组件默认跳过。
+无人值守示例：sh auto_zsh.sh --yes
+
+选项：
+  --yes, -y                    无人值守 auto 模式；已安装组件默认跳过
+  --non-interactive, -n        无人值守 auto 模式；已安装组件默认跳过
+  --reinstall                  已安装时重新编译 Zsh
+  --change-default-shell       将 Zsh 设为默认 Shell
+  --no-change-default-shell    不修改默认 Shell
+  --omz-action ACTION          Oh My Zsh: keep|update|reinstall
+  --omz-source SOURCE          Oh My Zsh: auto|github|gh-proxy|gitee
+  --uninstall                  纯卸载 Zsh
+  --cleanup                    卸载时清理 .zshrc 与 Oh My Zsh（危险）
+  --no-cleanup                 卸载时保留 .zshrc 与 Oh My Zsh
+  --help, -h                   显示帮助
+
+环境变量仍然兼容，命令行选项优先于同名环境变量。
+EOF
+}
+
+parse_args() {
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --yes | -y)
+                AUTO_SCRIPTS_NONINTERACTIVE=1
+                OMZ_ACTION=${OMZ_ACTION:-keep}
+                OMZ_SOURCE=${OMZ_SOURCE:-auto}
+                ;;
+            --non-interactive | -n)
+                AUTO_SCRIPTS_NONINTERACTIVE=1
+                ;;
+            --reinstall)
+                ZSH_REINSTALL=1
+                ;;
+            --change-default-shell)
+                CHANGE_DEFAULT_SHELL=1
+                ;;
+            --no-change-default-shell)
+                CHANGE_DEFAULT_SHELL=0
+                ;;
+            --omz-action)
+                [ "$#" -ge 2 ] || die "--omz-action 需要 keep、update 或 reinstall。"
+                OMZ_ACTION=$2
+                shift
+                ;;
+            --omz-source)
+                [ "$#" -ge 2 ] || die "--omz-source 需要 auto、github、gh-proxy 或 gitee。"
+                OMZ_SOURCE=$2
+                shift
+                ;;
+            --uninstall | uninstall)
+                ZSH_UNINSTALL=1
+                ;;
+            --cleanup)
+                ZSH_CLEANUP=1
+                ;;
+            --no-cleanup)
+                ZSH_CLEANUP=0
+                ;;
+            --help | -h)
+                usage
+                exit 0
+                ;;
+            --install)
+                :
+                ;;
+            *)
+                die "未知选项: $1；使用 --help 查看用法。"
+                ;;
+        esac
+        shift
+    done
+}
+
 ask_user() {
     ask_prompt=$1
     ask_default=$2
-    if [ "${AUTO_SCRIPTS_NONINTERACTIVE:-0}" = "1" ] || ! is_interactive; then
+    ask_can_use_tty=0
+    if has_prompt_terminal; then
+        ask_can_use_tty=1
+    fi
+    if [ "${AUTO_SCRIPTS_NONINTERACTIVE:-0}" = "1" ] || [ "$ask_can_use_tty" -eq 0 ]; then
         case "$ask_default" in [Yy]) return 0 ;; *) return 1 ;; esac
     fi
     while :; do
-        printf '%b' "${YELLOW}${ask_prompt} (y/n, 默认 ${ask_default}): ${NC}"
-        IFS= read -r ask_result || ask_result=$ask_default
+        printf '%b' "${YELLOW}${ask_prompt} (y/n, 默认 ${ask_default}): ${NC}" >&2
+        if is_interactive; then
+            IFS= read -r ask_result || ask_result=$ask_default
+        else
+            IFS= read -r ask_result < /dev/tty || ask_result=$ask_default
+        fi
         ask_result=${ask_result:-$ask_default}
         case "$ask_result" in
             [Yy]) return 0 ;;
@@ -146,11 +237,28 @@ target_user() {
     fi
 }
 
+target_home() {
+    target_home_user=${1:-$(target_user)}
+    if command -v getent >/dev/null 2>&1; then
+        target_home_path=$(getent passwd "$target_home_user" 2>/dev/null |
+            awk -F: 'NR == 1 {print $6}')
+        if [ -n "$target_home_path" ]; then
+            printf '%s\n' "$target_home_path"
+            return 0
+        fi
+    fi
+    if [ -n "${HOME:-}" ]; then
+        printf '%s\n' "$HOME"
+        return 0
+    fi
+    return 1
+}
+
 download_file() {
     download_url=$1
     download_output=$2
     curl --fail --location --silent --show-error \
-        --retry 3 --connect-timeout 10 \
+        --connect-timeout 10 \
         -o "$download_output" "$download_url"
 }
 
@@ -217,19 +325,99 @@ register_shell() {
     printf '%s\n' "$INSTALL_PATH" | run_privileged tee -a /etc/shells >/dev/null
 }
 
+passwd_entry_for_user() {
+    passwd_user=$1
+    if command -v getent >/dev/null 2>&1; then
+        getent passwd "$passwd_user" | sed -n '1p'
+    elif [ -r "${ZSH_PASSWD_FILE:-/etc/passwd}" ]; then
+        awk -F: -v user="$passwd_user" '$1 == user { print; exit }' "${ZSH_PASSWD_FILE:-/etc/passwd}"
+    else
+        return 1
+    fi
+}
+
+login_shell_for_user() {
+    login_user=$1
+    login_entry=$(passwd_entry_for_user "$login_user") || return 1
+    [ -n "$login_entry" ] || return 1
+    printf '%s\n' "$login_entry" | awk -F: 'NF >= 7 { print $7; exit }'
+}
+
+is_zsh_shell_path() {
+    case "$1" in
+        zsh | zsh-* | */zsh | */zsh-* ) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+active_shell_is_zsh() {
+    is_zsh_shell_path "${SHELL:-}" && return 0
+    if command -v ps >/dev/null 2>&1; then
+        active_parent_shell=$(ps -p "${PPID:-0}" -o comm= 2>/dev/null | awk 'NR == 1 { print $1 }')
+        is_zsh_shell_path "$active_parent_shell" && return 0
+    fi
+    return 1
+}
+
+is_allowed_executable_shell() {
+    allowed_shell=$1
+    [ -n "$allowed_shell" ] && [ -x "$allowed_shell" ] || return 1
+    allowed_shells_file=${ZSH_SHELLS_FILE:-/etc/shells}
+    [ -r "$allowed_shells_file" ] && grep -Fxq "$allowed_shell" "$allowed_shells_file"
+}
+
+find_fallback_shell() {
+    for fallback_shell in ${ZSH_FALLBACK_SHELLS:-/bin/bash /bin/sh /usr/bin/bash /usr/bin/sh /bin/dash /usr/bin/dash}; do
+        if [ "$fallback_shell" != "$INSTALL_PATH" ] && \
+           ! is_zsh_shell_path "$fallback_shell" && \
+           is_allowed_executable_shell "$fallback_shell"; then
+            printf '%s\n' "$fallback_shell"
+            return 0
+        fi
+    done
+    return 1
+}
+
+ensure_safe_zsh_uninstall() {
+    uninstall_user=$(target_user)
+    uninstall_login_shell=$(login_shell_for_user "$uninstall_user" 2>/dev/null || true)
+    uninstall_fallback_shell=$(find_fallback_shell 2>/dev/null || true)
+
+    if [ -z "$uninstall_fallback_shell" ]; then
+        die "未检测到可用的备用登录 Shell（如 /bin/bash 或 /bin/sh），为避免卸载后无法登录，拒绝卸载 Zsh。"
+    fi
+    if [ -z "$uninstall_login_shell" ]; then
+        die "无法确认用户 $uninstall_user 的登录 Shell，为安全起见拒绝卸载 Zsh。"
+    fi
+    if is_zsh_shell_path "$uninstall_login_shell"; then
+        die "用户 $uninstall_user 的登录 Shell 仍是 $uninstall_login_shell。请先用 root/云控制台执行 chsh -s $uninstall_fallback_shell $uninstall_user，再卸载 Zsh。"
+    fi
+    if active_shell_is_zsh; then
+        die "当前会话仍由 Zsh 运行。请先退出 Zsh、重新登录到 $uninstall_fallback_shell 后，再卸载 Zsh。"
+    fi
+    if ! is_allowed_executable_shell "$uninstall_login_shell"; then
+        die "用户 $uninstall_user 的登录 Shell $uninstall_login_shell 不存在或未在 ${ZSH_SHELLS_FILE:-/etc/shells} 注册，为安全起见拒绝卸载。"
+    fi
+    info ">>> 已检测到备用登录 Shell: $uninstall_login_shell（可用回退 Shell: $uninstall_fallback_shell）"
+}
+
 choose_omz_action() {
     omz_choice=${OMZ_ACTION:-}
     if [ -n "$omz_choice" ]; then
         case "$omz_choice" in keep | update | reinstall) printf '%s\n' "$omz_choice"; return 0 ;; *) return 1 ;; esac
     fi
-    if [ "${AUTO_SCRIPTS_NONINTERACTIVE:-0}" = "1" ] || ! is_interactive; then
+    if [ "${AUTO_SCRIPTS_NONINTERACTIVE:-0}" = "1" ] || ! has_prompt_terminal; then
         printf '%s\n' "keep"
         return 0
     fi
     while :; do
-        printf '%s\n' "Oh My Zsh 已存在: 1) 保留  2) 更新  3) 备份后重装" >&2
+        printf '%s\n' "Oh My Zsh 已存在: 1) 跳过（保留现状）  2) 更新  3) 备份后重装" >&2
         printf '%s' "选择 [1-3] (默认 1): " >&2
-        IFS= read -r omz_choice || omz_choice=1
+        if is_interactive; then
+            IFS= read -r omz_choice || omz_choice=1
+        else
+            IFS= read -r omz_choice < /dev/tty || omz_choice=1
+        fi
         omz_choice=${omz_choice:-1}
         case "$omz_choice" in
             1) printf '%s\n' "keep"; return 0 ;;
@@ -245,12 +433,16 @@ choose_omz_source() {
     if [ -n "$omz_source" ]; then
         case "$omz_source" in auto | github | gh-proxy | gitee) printf '%s\n' "$omz_source"; return 0 ;; *) return 1 ;; esac
     fi
-    if [ "${AUTO_SCRIPTS_NONINTERACTIVE:-0}" = "1" ] || ! is_interactive; then
+    if [ "${AUTO_SCRIPTS_NONINTERACTIVE:-0}" = "1" ] || ! has_prompt_terminal; then
         printf '%s\n' "auto"
         return 0
     fi
     printf '%s' "请选择 Oh My Zsh 源 (1: 自动切换 [默认], 2: GitHub, 3: gh-proxy, 4: Gitee): " >&2
-    IFS= read -r omz_source || omz_source=1
+    if is_interactive; then
+        IFS= read -r omz_source || omz_source=1
+    else
+        IFS= read -r omz_source < /dev/tty || omz_source=1
+    fi
     case "${omz_source:-1}" in
         1) printf '%s\n' "auto" ;;
         2) printf '%s\n' "github" ;;
@@ -389,10 +581,14 @@ configure_oh_my_zsh() {
     if [ -d "$OMZ_DIR" ]; then
         omz_action=$(choose_omz_action) || die "OMZ_ACTION 只能是 keep、update 或 reinstall。"
     fi
-    omz_source=$(choose_omz_source) || die "OMZ_SOURCE 只能是 auto、github、gh-proxy 或 gitee。"
 
+    if [ "$omz_action" = "keep" ]; then
+        info ">>> 跳过 Oh My Zsh 和插件同步，保留现有配置。"
+        return 0
+    fi
+
+    omz_source=$(choose_omz_source) || die "OMZ_SOURCE 只能是 auto、github、gh-proxy 或 gitee。"
     case "$omz_action" in
-        keep) info ">>> 保留现有 Oh My Zsh。" ;;
         update)
             git -C "$OMZ_DIR" pull --ff-only || die "Oh My Zsh 更新失败。"
             ;;
@@ -429,15 +625,35 @@ uninstall_zsh() {
         die "ZSH_INSTALL_PATH 必须采用 <prefix>/bin/zsh 形式。"
     zsh_shells_file=${ZSH_SHELLS_FILE:-/etc/shells}
 
-    info ">>> 开始卸载脚本安装的 Zsh。"
-    warn ">>> 保留用户的 .zshrc；Oh My Zsh 默认保留，可用 ZSH_REMOVE_OMZ=1 一并删除。"
+    ensure_safe_zsh_uninstall
+    uninstall_user=$(target_user)
+    uninstall_home=$(target_home "$uninstall_user") || \
+        die "无法确认用户 $uninstall_user 的 Home 目录，为安全起见拒绝清理留存文件。"
+    uninstall_zshrc_file=${ZSH_ZSHRC:-$uninstall_home/.zshrc}
+    uninstall_omz_dir=${ZSH_OMZ_DIR:-$uninstall_home/.oh-my-zsh}
 
-    if [ "${SHELL:-}" = "$INSTALL_PATH" ]; then
-        if [ "${ZSH_FORCE_UNINSTALL:-0}" != "1" ]; then
-            die "当前 Shell 正在使用 $INSTALL_PATH；请先切换到其他 Shell，或设置 ZSH_FORCE_UNINSTALL=1。"
+    zsh_remove_omz=${ZSH_REMOVE_OMZ:-0}
+    case "$zsh_remove_omz" in
+        0 | 1) ;;
+        *) die "ZSH_REMOVE_OMZ 只能是 0 或 1。" ;;
+    esac
+    zsh_cleanup=${ZSH_CLEANUP:-}
+    if [ -z "$zsh_cleanup" ]; then
+        if [ "${AUTO_SCRIPTS_NONINTERACTIVE:-0}" = "1" ] || ! has_prompt_terminal; then
+            zsh_cleanup=0
+        elif ask_user "是否清理留存文件（$uninstall_zshrc_file 和 $uninstall_omz_dir）?" "n"; then
+            zsh_cleanup=1
+        else
+            zsh_cleanup=0
         fi
-        warn "当前 Shell 正在使用 $INSTALL_PATH，按 ZSH_FORCE_UNINSTALL=1 继续卸载。"
     fi
+    case "$zsh_cleanup" in
+        0) info ">>> 保留 .zshrc 与 Oh My Zsh。" ;;
+        1) warn ">>> 将清理 .zshrc 与 Oh My Zsh，此操作不可恢复。" ;;
+        *) die "ZSH_CLEANUP 只能是 0 或 1。" ;;
+    esac
+
+    info ">>> 开始卸载脚本安装的 Zsh。"
 
     if [ -f "$zsh_shells_file" ] && [ -r "$zsh_shells_file" ]; then
         zsh_shells_tmp=$(mktemp) || die "无法创建临时文件。"
@@ -465,31 +681,40 @@ uninstall_zsh() {
             warn "无法删除手册页: $zsh_man_name"
     done
 
-    if [ "${ZSH_REMOVE_OMZ:-0}" = "1" ]; then
-        uninstall_omz_dir=${ZSH_OMZ_DIR:-$HOME/.oh-my-zsh}
+    if [ "$zsh_cleanup" -eq 1 ]; then
+        run_privileged rm -f "$uninstall_zshrc_file" || \
+            die "无法删除 .zshrc: $uninstall_zshrc_file"
+    fi
+    if [ "$zsh_cleanup" -eq 1 ] || [ "$zsh_remove_omz" -eq 1 ]; then
         if [ -d "$uninstall_omz_dir" ]; then
             run_privileged rm -rf "$uninstall_omz_dir" || \
                 die "无法删除 Oh My Zsh: $uninstall_omz_dir"
             info ">>> 已删除 Oh My Zsh: $uninstall_omz_dir"
         fi
     fi
+    if [ "$zsh_cleanup" -eq 1 ]; then
+        info ">>> 已清理留存文件: $uninstall_zshrc_file"
+    elif [ "$zsh_remove_omz" -eq 1 ]; then
+        info ">>> 已按 ZSH_REMOVE_OMZ=1 删除 Oh My Zsh，保留 .zshrc。"
+    else
+        info ">>> 已保留 .zshrc 与 Oh My Zsh。"
+    fi
 
-    info ">>> Zsh 卸载流程完成；未删除 .zshrc。"
+    info ">>> Zsh 卸载流程完成。"
 }
 
 main() {
+    parse_args "$@"
     info ">>> 环境检测启动..."
     [ "$(uname -s)" = "Linux" ] || die "Zsh 自动安装当前仅支持 Linux。"
 
-    case "${1:-}" in
-        uninstall | --uninstall) ZSH_UNINSTALL=1 ;;
-    esac
     if [ "${ZSH_UNINSTALL:-0}" = "1" ] || [ "${ACTION:-}" = "uninstall" ]; then
         uninstall_zsh
         return 0
     fi
 
-    zsh_needs_install=1
+    zsh_needs_install=0
+    zsh_first_install=0
     if [ -x "$INSTALL_PATH" ]; then
         current_zsh=$($INSTALL_PATH --version 2>/dev/null || printf '%s' "未知版本")
         info ">>> 检测到 $INSTALL_PATH: $current_zsh"
@@ -503,9 +728,19 @@ main() {
         fi
         case "$zsh_reinstall" in
             0) zsh_needs_install=0 ;;
-            1) ;;
+            1) zsh_needs_install=1 ;;
             *) die "ZSH_REINSTALL 只能是 0 或 1。" ;;
         esac
+    else
+        zsh_needs_install=1
+        zsh_first_install=1
+    fi
+
+    if [ "$zsh_needs_install" -eq 1 ] && [ "$zsh_first_install" -eq 1 ]; then
+        if ! ask_user "未检测到 $INSTALL_PATH，是否安装 Zsh ${ZSH_VERSION}?" "y"; then
+            info ">>> 已取消 Zsh 安装。"
+            return 0
+        fi
     fi
 
     if [ "$zsh_needs_install" -eq 1 ]; then
@@ -517,7 +752,7 @@ main() {
 
     change_shell=${CHANGE_DEFAULT_SHELL:-}
     if [ -z "$change_shell" ]; then
-        if [ "${AUTO_SCRIPTS_NONINTERACTIVE:-0}" = "1" ] || ! is_interactive; then
+        if [ "${AUTO_SCRIPTS_NONINTERACTIVE:-0}" = "1" ] || ! has_prompt_terminal; then
             change_shell=0
         elif ask_user "是否将 $INSTALL_PATH 设为默认 Shell?" "y"; then
             change_shell=1
