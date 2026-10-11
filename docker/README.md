@@ -14,7 +14,7 @@
 - 合并而非覆盖现有 `/etc/docker/daemon.json`，修改前自动备份
 - 可选配置 HTTPS 镜像地址与容器日志限制
 - 可选将当前用户加入 `docker` 组，免 `sudo` 运行
-- 默认交互执行；`--yes` / `--non-interactive` 按 auto 规则无人值守执行：Docker CE 默认腾讯云源，已安装组件默认跳过不覆盖
+- 默认交互执行；`--yes` 按 auto 规则无人值守执行：Docker CE 默认腾讯云源，已安装组件默认跳过不覆盖
 
 ## 支持系统
 
@@ -57,7 +57,7 @@ chmod +x auto_docker.sh && sh auto_docker.sh
 sh auto_docker.sh --yes --source aliyun
 
 # 保留现有 Docker，只更新 Compose v5.6.0，不修改 daemon 配置
-sh auto_docker.sh --non-interactive --source skip \
+sh auto_docker.sh --yes --source skip \
   --compose-version v5.6.0 --compose-source gh-proxy \
   --no-configure-daemon --compose-compat
 ```
@@ -130,5 +130,5 @@ sh auto_docker.sh --uninstall --cleanup
 - 脚本不下载、不覆盖 Docker 自带的 `docker compose` CLI 插件；只管理独立的 `docker-compose` 可执行文件，可用 `COMPOSE_COMPAT_INSTALL=1` 强制安装、`COMPOSE_COMPAT_INSTALL=0` 跳过
 - 卸载时会先筛选实际已安装的软件包，不会因为历史包名（例如 `docker-scan-plugin`）不存在而使整组卸载失败；卸载后仍存在的命令会被明确提示为残留
 - Compose 默认使用 `COMPOSE_DOWNLOAD_SOURCE=auto`，按官方 GitHub → `gh-proxy.org` 顺序尝试；设置为 `official` 使用同样的官方优先顺序，设置为 `gh-proxy` 才优先使用加速源。二进制和 `.sha256` 必须成对下载并校验通过。这只针对独立 `docker-compose`，不管理 Docker 自带的 `docker compose` 插件。
-- 每个下载地址只尝试一次；官方地址失败后立即切换到加速地址，不会在单个地址上自动重试三次。
+- 每个下载地址只尝试一次；官方地址失败后立即切换到加速地址，不会在单个地址上自动重试三次。小文件下载上限 120 秒、Compose 二进制上限 300 秒；若持续 30 秒速度低于 10KB/s 会视为停滞立即中止，随后切换下一候选源。
 - Compose 默认通过 GitHub API 解析 `latest`（当前目标版本为 v5.6.0 时也可设置 `COMPOSE_VERSION=v5.6.0`）；若当前 shell 仍命中旧版本，请执行 `rehash`（zsh）或 `hash -r`（bash）

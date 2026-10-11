@@ -78,8 +78,7 @@ usage() {
 一键安装示例：sh auto_docker.sh --yes --source aliyun
 
 选项：
-  --yes, -y                    无人值守 auto 模式；已安装组件默认跳过
-  --non-interactive, -n        无人值守 auto 模式；Docker CE 默认腾讯云源
+  --yes, -y                    无人值守 auto 模式：Docker CE 默认腾讯云源，已安装组件默认跳过
   --source SOURCE              Docker 源: official|aliyun|tencent|skip（auto 默认 tencent）
   --reinstall                  已安装 Docker 时重新运行安装脚本
   --configure-daemon           安全合并镜像与日志配置
@@ -102,14 +101,13 @@ parse_args() {
         case "$1" in
             --yes | -y)
                 AUTO_SCRIPTS_NONINTERACTIVE=1
-                DOCKER_SOURCE=${DOCKER_SOURCE:-tencent}
-                ;;
-            --non-interactive | -n)
-                AUTO_SCRIPTS_NONINTERACTIVE=1
-                DOCKER_SOURCE=${DOCKER_SOURCE:-tencent}
                 ;;
             --source | --docker-source)
                 [ "$#" -ge 2 ] || die "--source 需要 official、aliyun、tencent 或 skip。"
+                case "$2" in
+                    official | aliyun | tencent | tsinghua | skip | 1 | 2 | 3 | 4) ;;
+                    *) die "--source 只能是 official、aliyun、tencent 或 skip。" ;;
+                esac
                 DOCKER_SOURCE=$2
                 shift
                 ;;
@@ -231,8 +229,10 @@ run_privileged() {
 download_file() {
     download_url=$1
     download_output=$2
+    download_max_time=${3:-120}
     curl --fail --location --silent --show-error \
-        --connect-timeout 10 \
+        --connect-timeout 10 --max-time "$download_max_time" \
+        --speed-limit 10240 --speed-time 30 \
         -o "$download_output" "$download_url"
 }
 
@@ -266,7 +266,7 @@ download_compose_from_source() {
         "$download_one_version" "$download_one_source" \
         "$download_one_os" "$download_one_arch") || return 1
     rm -f "$download_one_binary" "$download_one_checksum"
-    if ! download_file "$download_one_url" "$download_one_binary" || \
+    if ! download_file "$download_one_url" "$download_one_binary" 300 || \
        ! download_file "${download_one_url}.sha256" "$download_one_checksum"; then
         return 1
     fi
@@ -597,7 +597,9 @@ uninstall_docker() {
     else
         warn ">>> Docker 卸载流程结束，但仍有组件未清理完成。"
     fi
-    info ">>> 数据目录未删除；如需清理数据，请先单独备份后手工处理。"
+    if [ "$docker_cleanup" -eq 0 ]; then
+        info ">>> 数据目录未删除；如需清理数据，请先单独备份后手工处理。"
+    fi
 }
 
 merge_daemon_json() {
@@ -737,7 +739,8 @@ installed_compat_compose_version() {
 }
 
 latest_compose_version() {
-    latest_compose_response=$(curl --fail --location --silent --show-error --connect-timeout 10 \
+    latest_compose_response=$(curl --fail --location --silent --show-error \
+        --connect-timeout 10 --max-time 30 \
         -H 'Accept: application/vnd.github+json' \
         https://api.github.com/repos/docker/compose/releases/latest 2>/dev/null || true)
     latest_compose_tag=$(printf '%s\n' "$latest_compose_response" |
@@ -748,7 +751,8 @@ latest_compose_version() {
     fi
 
     # 国内网络无法访问 GitHub API 时，通过同一 GitHub 加速入口解析 latest。
-    latest_compose_response=$(curl --fail --location --silent --show-error --connect-timeout 10 \
+    latest_compose_response=$(curl --fail --location --silent --show-error \
+        --connect-timeout 10 --max-time 30 \
         -H 'Accept: application/vnd.github+json' \
         https://gh-proxy.org/https://api.github.com/repos/docker/compose/releases/latest 2>/dev/null || true)
     printf '%s\n' "$latest_compose_response" |
@@ -798,7 +802,10 @@ manage_compose() {
         compose_needs_install=0
     fi
 
-    if [ "$compose_update" = "auto" ] && has_prompt_terminal; then
+    # 无人值守模式下不得进入询问分支：ask_user 会直接采用默认值 y，
+    # 导致已安装的独立 docker-compose 被强制覆盖更新（违反 auto 规则）。
+    if [ "$compose_update" = "auto" ] && \
+       [ "${AUTO_SCRIPTS_NONINTERACTIVE:-0}" != "1" ] && has_prompt_terminal; then
         if [ -n "$compose_compat_current" ]; then
             info ">>> 检测到独立 docker-compose: v$compose_compat_current"
             compose_prompt="是否检查并安装/更新独立 docker-compose 到 v${compose_target:-$compose_version}?"

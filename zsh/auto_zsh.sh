@@ -120,8 +120,7 @@ usage() {
 无人值守示例：sh auto_zsh.sh --yes
 
 选项：
-  --yes, -y                    无人值守 auto 模式；已安装组件默认跳过
-  --non-interactive, -n        无人值守 auto 模式；已安装组件默认跳过
+  --yes, -y                    无人值守 auto 模式：官方源优先，已安装组件默认跳过
   --reinstall                  已安装时重新编译 Zsh
   --change-default-shell       将 Zsh 设为默认 Shell
   --no-change-default-shell    不修改默认 Shell
@@ -143,9 +142,6 @@ parse_args() {
                 AUTO_SCRIPTS_NONINTERACTIVE=1
                 OMZ_ACTION=${OMZ_ACTION:-keep}
                 OMZ_SOURCE=${OMZ_SOURCE:-auto}
-                ;;
-            --non-interactive | -n)
-                AUTO_SCRIPTS_NONINTERACTIVE=1
                 ;;
             --reinstall)
                 ZSH_REINSTALL=1
@@ -257,8 +253,10 @@ target_home() {
 download_file() {
     download_url=$1
     download_output=$2
+    download_max_time=${3:-120}
     curl --fail --location --silent --show-error \
-        --connect-timeout 10 \
+        --connect-timeout 10 --max-time "$download_max_time" \
+        --speed-limit 10240 --speed-time 30 \
         -o "$download_output" "$download_url"
 }
 
@@ -297,7 +295,7 @@ install_zsh_source() {
         die "ZSH_INSTALL_PATH 必须采用 <prefix>/bin/zsh 形式。"
     }
     info ">>> 正在下载并校验 Zsh ${ZSH_VERSION}..."
-    if ! download_file "$ZSH_URL" "$zsh_archive"; then
+    if ! download_file "$ZSH_URL" "$zsh_archive" 300; then
         rm -rf "$zsh_workdir"
         die "Zsh 源码下载失败。"
     fi
@@ -575,8 +573,13 @@ EOF
 }
 
 configure_oh_my_zsh() {
-    OMZ_DIR=${ZSH_OMZ_DIR:-$HOME/.oh-my-zsh}
-    zshrc_file="$HOME/.zshrc"
+    # 以 sudo 运行时 $HOME 可能指向 /root；统一按目标用户（SUDO_USER）的
+    # Home 目录定位 Oh My Zsh 与 .zshrc，与卸载路径（target_home）保持一致。
+    omz_target_user=$(target_user)
+    omz_target_home=$(target_home "$omz_target_user") || \
+        die "无法确认用户 $omz_target_user 的 Home 目录，跳过 Oh My Zsh 配置。"
+    OMZ_DIR=${ZSH_OMZ_DIR:-$omz_target_home/.oh-my-zsh}
+    zshrc_file=${ZSH_ZSHRC:-$omz_target_home/.zshrc}
     omz_action=install
     if [ -d "$OMZ_DIR" ]; then
         omz_action=$(choose_omz_action) || die "OMZ_ACTION 只能是 keep、update 或 reinstall。"

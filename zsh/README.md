@@ -17,7 +17,7 @@
 - 每个下载地址只尝试一次；自动源失败后立即切换到下一个候选源
 - 插件已存在时执行快进更新，不重复克隆
 - 合并 `.zshrc` 插件列表，保留用户已有插件并避免重复
-- 默认交互执行；`--yes` / `--non-interactive` 按 auto 规则无人值守执行，官方源优先、加速源后备，已安装组件默认跳过不覆盖
+- 默认交互执行；`--yes` 按 auto 规则无人值守执行，官方源优先、加速源后备，已安装组件默认跳过不覆盖
 
 ## 支持系统
 
@@ -60,9 +60,6 @@ chmod +x auto_zsh.sh && sh auto_zsh.sh
 ```bash
 # 一键安装/配置：未安装时安装 Zsh 和 Oh My Zsh，已存在组件默认跳过
 sh auto_zsh.sh --yes
-
-# 无人值守但保留各项保守默认值
-sh auto_zsh.sh --non-interactive
 
 # 重新编译 Zsh、更新 Oh My Zsh，但不修改默认 Shell
 sh auto_zsh.sh --reinstall --no-change-default-shell \
@@ -128,6 +125,8 @@ sh auto_zsh.sh --uninstall --cleanup
 ## 注意事项
 
 - 编译安装、修改 `/etc/shells` 或切换默认 Shell 时需要 root 或 `sudo` 权限
+- 建议以普通用户身份运行，脚本会按需自动提权；以 `sudo` 运行时，Oh My Zsh、插件与 `.zshrc` 会配置到原用户（`SUDO_USER`）的家目录，而不是 `/root`
+- 小文件下载上限 120 秒、Zsh 源码包上限 300 秒；若持续 30 秒速度低于 10KB/s 会视为停滞立即中止并切换下一个候选源
 - 卸载前会检查当前用户的登录 Shell、当前会话以及 `/etc/shells` 中是否存在可执行的 Bash/Sh 备用 Shell；如果当前登录 Shell 仍是 Zsh，或没有备用 Shell，脚本会拒绝卸载，避免 SSH 断连
 - Zsh 固定使用已校验的 5.9.2 源码归档；SourceForge 没有适合此流程的稳定 `latest` 归档地址
 - 当前支持 Linux；脚本会拒绝在未验证的平台上继续安装
